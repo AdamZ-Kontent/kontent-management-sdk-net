@@ -72,13 +72,73 @@ public class ManagementHttpClientTests
     }
 
     [Fact]
-    public async void Retries_WithDefaultSettings_Retries()
+    public async void Retries_WithDefaultSettings_FailsAfterAllRetries()
     {
         var expectedAttempts = Constants.DEFAULT_MAX_RETRIES + 1;
         var failfulMessage = new HttpRequestMessage();
         httpClient
             .SendAsync(failfulMessage)
             .ReturnsForAnyArgs((request) => new HttpResponseMessage(HttpStatusCode.RequestTimeout));
+
+        httpClient.ClearReceivedCalls();
+        await Assert.ThrowsAsync<ManagementException>(async () => { await _defaultClient.SendAsync(messageCreator, endpointUrl, method); });
+        await httpClient.ReceivedWithAnyArgs(expectedAttempts).SendAsync(failfulMessage);
+    }
+
+    [Fact]
+    public async void Retries_WithDefaultSettings_NoRetryAfterValue_Succeeds()
+    {
+        var expectedAttempts = 2;
+        var failfulMessage = new HttpRequestMessage();
+        httpClient
+            .SendAsync(failfulMessage)
+            .ReturnsForAnyArgs(
+            x => 
+            { 
+                return new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            },
+            x => 
+            { 
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+
+        await _defaultClient.SendAsync(messageCreator, endpointUrl, method);
+        await httpClient.ReceivedWithAnyArgs(expectedAttempts).SendAsync(failfulMessage);
+    }
+
+    [Fact]
+    public async void Retries_WithDefaultSettings_WithRetryAfterHeader_Succeeds()
+    {
+        var expectedAttempts = 2;
+        var failfulMessage = new HttpRequestMessage();
+        httpClient
+            .SendAsync(failfulMessage)
+            .ReturnsForAnyArgs(
+            x =>
+            {
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.TooManyRequests,
+                    Headers = { { "Retry-After", "2" } }
+                };
+            },
+            x =>
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+
+        await _defaultClient.SendAsync(messageCreator, endpointUrl, method);
+        await httpClient.ReceivedWithAnyArgs(expectedAttempts).SendAsync(failfulMessage);
+    }
+
+    [Fact]
+    public async void Retries_WithDefaultSettings_WithRetryAfterHeader_FailsAfterAllRetries()
+    {
+        var expectedAttempts = 2 * (Constants.DEFAULT_MAX_RETRIES + 1);
+        var failfulMessage = new HttpRequestMessage();
+        httpClient
+            .SendAsync(failfulMessage)
+            .ReturnsForAnyArgs((request) => new HttpResponseMessage(HttpStatusCode.TooManyRequests));
 
         httpClient.ClearReceivedCalls();
         await Assert.ThrowsAsync<ManagementException>(async () => { await _defaultClient.SendAsync(messageCreator, endpointUrl, method); });

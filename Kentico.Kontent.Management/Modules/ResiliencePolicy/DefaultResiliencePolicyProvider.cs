@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Net;
 using System.Net.Http;
-
+using System.Threading.Tasks;
 using Polly;
+using Polly.Wrap;
 
 namespace Kentico.Kontent.Management.Modules.ResiliencePolicy;
 
@@ -24,12 +26,27 @@ public class DefaultResiliencePolicyProvider : IResiliencePolicyProvider
     /// <summary>
     /// Gets the default (fallback) retry policy for HTTP requests.
     /// </summary>
-    public IAsyncPolicy<HttpResponseMessage> Policy =>
-            // Only HTTP status codes are handled with retries, not exceptions.
-            Polly.Policy
-                .HandleResult<HttpResponseMessage>(result => Enum.IsDefined(typeof(RetryHttpCode), (RetryHttpCode)result.StatusCode))
-                .WaitAndRetryAsync(
-                    _maxRetryAttempts,
-                    retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100)
-                );
+    public IAsyncPolicy<HttpResponseMessage> Policy => WrappedPolicy();
+
+    private IAsyncPolicy<HttpResponseMessage> WrappedPolicy()
+    {
+        var defaultPolicy = Polly.Policy
+            .HandleResult<HttpResponseMessage>(result => Enum.IsDefined(typeof(RetryHttpCode), (RetryHttpCode)result.StatusCode))
+            .WaitAndRetryAsync(
+                _maxRetryAttempts,
+                retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100));
+
+        var retryAfterPolicy = Polly.Policy
+            .HandleResult<HttpResponseMessage>(result => result.StatusCode == (HttpStatusCode)429)
+            .WaitAndRetryAsync(
+            retryCount: 1,
+            sleepDurationProvider: (retryCount, response, context) => {
+                var retryAfter = response?.Result?.Headers?.RetryAfter?.Delta;
+
+                return retryAfter.HasValue ? retryAfter.Value : TimeSpan.Zero;
+            },
+            onRetryAsync: (response, timespan, retryCount, context) => Task.CompletedTask);
+
+        return Polly.Policy.WrapAsync(defaultPolicy, retryAfterPolicy);
+    }
 }
